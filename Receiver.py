@@ -2,7 +2,7 @@ import socket
 import pickle
 import cv2
 import numpy as np
-from logic import generate_chaos
+from logic import apply_dna_diffusion, generate_chaos
 
 def receiver():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -39,19 +39,16 @@ def receiver():
             elif msg['mode'] == 'ENCRYPTED':
                 print("Received ENCRYPTED image. Starting Decryption...")
                 enc_data = msg['data']
-                x0, y0, a, h, w, c = msg['params']
+                x0, y0, a, b, h, w, c = msg['params']
                 
-                # שחזור המפתח הכאוטי (חייב להיות זהה לשולח)
-                x_c, y_c = generate_chaos(x0, y0, a, h*w*c)
+                x_c, y_c = generate_chaos(x0, y0, a, b, h*w*c)
                 key_s = (y_c * 255).astype(np.uint8)
                 
-                # פענוח: XOR + היפוך ערבול (Inverse Scrambling)
-                diffused = np.bitwise_xor(enc_data, key_s)
+                # פענוח: חיסור DNA ואז היפוך ערבול
+                undiffused = apply_dna_diffusion(enc_data, key_s, decrypt=True)
                 idx = np.argsort(x_c)
-                inv_idx = np.zeros_like(idx)
-                inv_idx[idx] = np.arange(len(idx))
-                
-                decrypted = diffused[inv_idx].reshape(h, w, c)
+                inv_idx = np.zeros_like(idx); inv_idx[idx] = np.arange(len(idx))
+                decrypted = undiffused[inv_idx].reshape(h, w, c)
                 
                 cv2.imshow('Encrypted Data (As seen in Wireshark)', enc_data.reshape(h, w, c))
                 cv2.imshow('Decrypted Result', decrypted)

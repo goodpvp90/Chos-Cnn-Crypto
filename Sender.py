@@ -22,29 +22,24 @@ def sender():
     
     if args.mode == 'ENCRYPTED':
         print(f"--- Mode: ENCRYPTED (Chaos + CNN + DNA) ---")
-        # 1. הפקת מפתחות מהתמונה (K1-K4) באמצעות ה-CNN
+        # 1. הפקת מפתחות CNN
         img_t = torch.from_numpy(img).permute(2,0,1).float().unsqueeze(0)/255.0
-        k_vals = ImageFeatureCNN()(img_t)
+        k = ImageFeatureCNN()(img_t)
         
-        # 2. חישוב פרמטרים התחלתיים לכאוס (מיפוי K לערכים מתמטיים)
-        x0, y0, a = (k_vals[0]%1), (k_vals[1]%1), 3.9 + (k_vals[2]%0.1)
-        print(f"Chaos Params: x0={x0:.4f}, y0={y0:.4f}, a={a:.4f}")
-        # 3. יצירת Key-streams וביצוע ערבול (Scrambling)
-        x_c, y_c = generate_chaos(x0, y0, a, h*w*c)
+        # 2. פרמטרים כאוטיים
+        x0, y0, a, b = (k[0]%1), (k[1]%1), 4.5+(k[2]%0.5), 4.5+(k[3]%0.5)
+        
+        # 3. Scrambling (ערבול)
+        x_c, y_c = generate_chaos(x0, y0, a, b, h*w*c)
         idx = np.argsort(x_c)
         scrambled = img.flatten()[idx]
         
-        # 4. פעפוע (Diffusion) מבוסס DNA
+        # 4. DNA Diffusion (דיפוזיה)
         key_stream = (y_c * 255).astype(np.uint8)
         encrypted_data = apply_dna_diffusion(scrambled, key_stream)
         
-        # יצירת אובייקט ההודעה
-        msg_obj = {
-            'mode': 'ENCRYPTED', 
-            'data': encrypted_data, 
-            'params': (x0, y0, a, h, w, c)
-        }
-        marker = "START_ENC".encode() # המרקר ל-Wireshark
+        msg_obj = {'mode': 'ENCRYPTED', 'data': encrypted_data, 'params': (x0, y0, a, b, h, w, c)}
+        marker = b"START_ENC"
     else:
         print("--- Mode: PLAIN (Raw Image) ---")
         msg_obj = {'mode': 'PLAIN', 'data': img}
