@@ -1,65 +1,51 @@
-import socket
-import pickle
-import cv2
-import numpy as np
-from logic import apply_dna_diffusion, generate_chaos
+import socket, pickle, cv2, numpy as np
+from logic import generate_rsa_pair, decrypt_keys_rsa, generate_chaos, get_diffusion_matrices, apply_diffusion
+from cryptography.hazmat.primitives import serialization
 
 def receiver():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(('0.0.0.0', 5555))
-    sock.listen(1)
-    print("Receiver Ready. Waiting for data...")
-
+    priv, pub = generate_rsa_pair()
+    pub_pem = pub.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    
+    sock = socket.socket()
+    sock.bind(('0.0.0.0', 5555)); sock.listen(1)
+    print("Receiver Ready...")
+    
     while True:
-        conn, addr = sock.accept()
+        conn, _ = sock.accept()
+        conn.sendall(pub_pem)
+        
         data = b""
-        try:
-            while True:
-                packet = conn.recv(4096 * 16)
-                if not packet: break
-                data += packet
+        while True:
+            pkt = conn.recv(65536)
+            if not pkt: break
+            data += pkt
+        
+        marker = data[:9].decode(errors='ignore')
+        msg = pickle.loads(data[9:])
+
+        if marker == "START_ENC":
+            k = decrypt_keys_rsa(priv, msg['envelope'])
+            h, w, c = msg['shape']
             
-            if len(data) < 9:
-                print("Error: Received data is too short.")
-                continue
-
-            # --- שלב המיקרו: הפרדת המרקר מה-Payload ---
-            marker = data[:9].decode(errors='ignore') # 9 התווים הראשונים
-            actual_payload = data[9:]                # כל השאר
-
-            print(f"Detected Marker: {marker}")
-
-            # טעינת המידע באמצעות pickle על השארית בלבד
-            msg = pickle.loads(actual_payload)
+            alpha = (k[0] % 1) * 100 + np.floor(k[0])
+            beta = (round(k[1] * 10**10) % 35) + 2
+            x0, y0 = (k[2] % 1), (k[3] % 1)
             
-            if msg['mode'] == 'PLAIN':
-                print("Received PLAIN image.")
-                cv2.imshow('Receiver Output (PLAIN)', msg['data'])
+            X, Y = generate_chaos(alpha, beta, x0, y0, h*w*c)
+            diff_keys = get_diffusion_matrices(X, Y)
             
-            elif msg['mode'] == 'ENCRYPTED':
-                print("Received ENCRYPTED image. Starting Decryption...")
-                enc_data = msg['data']
-                x0, y0, a, b, h, w, c = msg['params']
-                
-                x_c, y_c = generate_chaos(x0, y0, a, b, h*w*c)
-                key_s = (y_c * 255).astype(np.uint8)
-                
-                # פענוח: חיסור DNA ואז היפוך ערבול
-                undiffused = apply_dna_diffusion(enc_data, key_s, decrypt=True)
-                idx = np.argsort(x_c)
-                inv_idx = np.zeros_like(idx); inv_idx[idx] = np.arange(len(idx))
-                decrypted = undiffused[inv_idx].reshape(h, w, c)
-                
-                cv2.imshow('Encrypted Data (As seen in Wireshark)', enc_data.reshape(h, w, c))
-                cv2.imshow('Decrypted Result', decrypted)
+            # פענוח (XOR על 4 המטריצות בסדר זהה)
+            undiffused = apply_diffusion(msg['image'], diff_keys)
+            
+            idx = np.argsort(X)
+            inv = np.zeros_like(idx); inv[idx] = np.arange(len(idx))
+            decrypted = undiffused[inv].reshape(h, w, c)
+            cv2.imshow("Decrypted", decrypted)
+        else:
+            cv2.imshow("Plain", msg['image'])
 
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-
-        except Exception as e:
-            print(f"Error processing data: {e}")
-        finally:
-            conn.close()
+        cv2.waitKey(0)
+        conn.close()
 
 if __name__ == "__main__":
     receiver()

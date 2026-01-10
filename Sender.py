@@ -1,65 +1,50 @@
-import socket
-import pickle
-import argparse
-import torch
-import cv2
-import numpy as np
-from logic import ImageFeatureCNN, generate_chaos, apply_dna_diffusion
+import socket, pickle, torch, cv2, numpy as np, argparse
+from logic import ImageFeatureCNN, generate_chaos, get_diffusion_matrices, apply_diffusion, encrypt_keys_rsa
+from cryptography.hazmat.primitives import serialization
 
 def sender():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--ip', required=True, help="Receiver IP address")
-    parser.add_argument('--mode', choices=['PLAIN', 'ENCRYPTED'], default='ENCRYPTED')
+    parser.add_argument('--ip', required=True)
+    parser.add_argument('--mode', choices=['ENCRYPTED', 'PLAIN'], default='ENCRYPTED')
     args = parser.parse_args()
 
-    # טעינת התמונה
-    img = cv2.imread('photo.png')
-    if img is None:
-        print("Error: photo.jpg not found!")
-        return
-    
+    img = cv2.imread('photo.jpg') 
+    if img is None: return
     h, w, c = img.shape
     
+    sock = socket.socket()
+    sock.connect((args.ip, 5555))
+    pub_key_bytes = sock.recv(1024)
+    public_key = serialization.load_pem_public_key(pub_key_bytes)
+
     if args.mode == 'ENCRYPTED':
-        print(f"--- Mode: ENCRYPTED (Chaos + CNN + DNA) ---")
-        # 1. הפקת מפתחות CNN
+        print("--- Mode: ENCRYPTED ---")
         img_t = torch.from_numpy(img).permute(2,0,1).float().unsqueeze(0)/255.0
-        k = ImageFeatureCNN()(img_t)
+        k = ImageFeatureCNN()(img_t).astype(np.float32)
         
-        # 2. פרמטרים כאוטיים
-        x0, y0, a, b = (k[0]%1), (k[1]%1), 4.5+(k[2]%0.5), 4.5+(k[3]%0.5)
+        alpha = (k[0] % 1) * 100 + np.floor(k[0])
+        beta = (round(k[1] * 10**10) % 35) + 2
+        x0, y0 = (k[2] % 1), (k[3] % 1)
         
-        # 3. Scrambling (ערבול)
-        x_c, y_c = generate_chaos(x0, y0, a, b, h*w*c)
-        idx = np.argsort(x_c)
+        X, Y = generate_chaos(alpha, beta, x0, y0, h*w*c)
+        idx = np.argsort(X) 
         scrambled = img.flatten()[idx]
         
-        # 4. DNA Diffusion (דיפוזיה)
-        key_stream = (y_c * 255).astype(np.uint8)
-        encrypted_data = apply_dna_diffusion(scrambled, key_stream)
+        # תיקון: Unpacking של 4 המטריצות לפי המאמר
+        diff_keys = get_diffusion_matrices(X, Y) 
+        encrypted_image = apply_diffusion(scrambled, diff_keys)
         
-        msg_obj = {'mode': 'ENCRYPTED', 'data': encrypted_data, 'params': (x0, y0, a, b, h, w, c)}
+        envelope = encrypt_keys_rsa(public_key, k)
+        msg_obj = {'shape': (h, w, c), 'envelope': envelope, 'image': encrypted_image}
         marker = b"START_ENC"
     else:
-        print("--- Mode: PLAIN (Raw Image) ---")
-        msg_obj = {'mode': 'PLAIN', 'data': img}
-        marker = "START_PLN".encode() # המרקר ל-Wireshark
+        print("--- Mode: PLAIN ---")
+        msg_obj = {'image': img}
+        marker = b"START_PLN"
 
-    # אריזת המידע
-    payload = pickle.dumps(msg_obj)
-    full_package = marker + payload  # הצמדת המרקר לתחילת הבייטים
-    
-    # פתיחת Socket ושליחה
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((args.ip, 5555))
-        print(f"Sending {len(full_package)} bytes to {args.ip}...")
-        sock.sendall(full_package)
-        print("Transmission complete.")
-    except Exception as e:
-        print(f"Connection failed: {e}")
-    finally:
-        sock.close()
+    sock.sendall(marker + pickle.dumps(msg_obj))
+    sock.close()
+    print(f"Sent successfully with {marker.decode()}")
 
 if __name__ == "__main__":
     sender()

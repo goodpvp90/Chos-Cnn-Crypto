@@ -1,61 +1,77 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import cv2
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization, hashes
 
-# --- CNN משופר להפקת מפתחות ---
+# --- CNN אקדמי (ללא שינוי) ---
+class ResidualBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(channels, channels, 3, padding=1),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(),
+            nn.Conv2d(channels, channels, 3, padding=1),
+            nn.BatchNorm2d(channels)
+        )
+    def forward(self, x):
+        return nn.functional.relu(x + self.conv(x))
+
 class ImageFeatureCNN(nn.Module):
     def __init__(self):
         super().__init__()
-        torch.manual_seed(42) # מבטיח משקולות קבועות לשחזור
-        self.net = nn.Sequential(
-            nn.Conv2d(3, 16, 3, stride=2, padding=1),
-            nn.BatchNorm2d(16),
+        torch.manual_seed(42)
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 16, 7, padding=3), 
             nn.ReLU(),
-            nn.Conv2d(16, 32, 3, stride=2, padding=1),
+            nn.Conv2d(16, 32, 5, padding=2), 
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((2, 2)) # מפיק 4 ערכים (K1-K4)
+            nn.Conv2d(32, 64, 3, padding=1), 
+            nn.ReLU(),
+            ResidualBlock(64), 
+            ResidualBlock(64),
+            ResidualBlock(64),
+            nn.Conv2d(64, 4, 1), 
+            nn.AdaptiveAvgPool2d((1, 1)) 
         )
     def forward(self, x):
-        return self.net(x).view(-1).detach().numpy()
+        return self.features(x).view(-1).detach().numpy()
 
-# --- מערכת Hyper-Chaos 2D-SICM משופרת ---
-def generate_chaos(x0, y0, a, b, size):
+# --- Chaos (2D-SICM) ---
+def generate_chaos(alpha, beta, x0, y0, size):
     x, y = np.zeros(size), np.zeros(size)
     x[0], y[0] = x0, y0
+    eps = 1e-10 
     for n in range(size - 1):
-        # מימוש נוסחת 2D-SICM מהמאמר (Sine-Iterative Chaotic Map)
-        x[n+1] = np.sin(a * np.pi / (y[n] + 0.1)) % 1
-        y[n+1] = np.sin(b * np.pi / (x[n+1] + 0.1)) % 1
+        x[n+1] = np.sin(alpha * np.pi * x[n] + (beta / (y[n] + eps))) % 1
+        y[n+1] = np.sin(beta * np.pi * y[n] + (alpha / (x[n+1] + eps))) % 1
     return x, y
 
-# --- שכבת DNA: קידוד, פענוח וחיבור אלגברי ---
-def dna_encode(arr):
-    # הופך בייטים לרצף DNA (00:A, 01:C, 10:G, 11:T)
-    bin_arr = np.unpackbits(arr.astype(np.uint8)).reshape(-1, 4, 2)
-    dna = np.zeros((bin_arr.shape[0], 4), dtype=int)
-    for i in range(2): dna += bin_arr[:,:,1-i] * (2**i)
-    return dna # מחזיר מערך של ערכים 0-3
+# --- מימוש Eq. (7) מהמאמר: יצירת 4 מטריצות לדיפוזיה ---
+def get_diffusion_matrices(X, Y):
+    # המאמר דורש X1, X2, X3, X4 מבוססי Modulo 256
+    X1 = (X * 10**10).astype(np.int64) % 256
+    X2 = (Y * 10**10).astype(np.int64) % 256
+    X3 = ((X + Y) * 10**10).astype(np.int64) % 256
+    X4 = ((X - Y) * 10**10).astype(np.int64) % 256
+    return X1, X2, X3, X4 # החזרת ה-Tuple המלא
 
-def dna_decode(dna_arr):
-    # מחזיר DNA לבייטים
-    bits = np.zeros((dna_arr.shape[0], 4, 2), dtype=np.uint8)
-    bits[:,:,0] = (dna_arr >> 1) & 1
-    bits[:,:,1] = dna_arr & 1
-    return np.packbits(bits.flatten())
+def apply_diffusion(img_flat, key_matrices):
+    # הפונקציה מקבלת את רשימת המטריצות ומבצעת XOR רב-שכבתי
+    res = img_flat.astype(np.uint8)
+    for key in key_matrices:
+        res = np.bitwise_xor(res, key.astype(np.uint8))
+    return res
 
-def dna_add(a, b): # חיבור DNA לפי חוק 1 (Mod 4)
-    return (a + b) % 4
+# --- RSA (ללא שינוי) ---
+def generate_rsa_pair():
+    private_key = rsa.generate_private_key(65537, 2048)
+    return private_key, private_key.public_key()
 
-def dna_sub(a, b): # חיסור DNA לפענוח
-    return (a - b + 4) % 4
+def encrypt_keys_rsa(public_key, k):
+    return public_key.encrypt(k.tobytes(), padding.OAEP(padding.MGF1(hashes.SHA256()), hashes.SHA256(), None))
 
-def apply_dna_diffusion(img_flat, key_flat, decrypt=False):
-    # דיפוזיה אלגברית במקום XOR פשוט
-    img_dna = dna_encode(img_flat)
-    key_dna = dna_encode(key_flat)
-    if not decrypt:
-        res_dna = dna_add(img_dna, key_dna)
-    else:
-        res_dna = dna_sub(img_dna, key_dna)
-    return dna_decode(res_dna)
+def decrypt_keys_rsa(priv_key, blob):
+    decrypted = priv_key.decrypt(blob, padding.OAEP(padding.MGF1(hashes.SHA256()), hashes.SHA256(), None))
+    return np.frombuffer(decrypted, dtype=np.float32)
