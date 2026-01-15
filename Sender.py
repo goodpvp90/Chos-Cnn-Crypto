@@ -8,7 +8,7 @@ def sender():
     parser.add_argument('--mode', choices=['ENCRYPTED', 'PLAIN'], default='ENCRYPTED')
     args = parser.parse_args()
 
-    img = cv2.imread('photo.jpg') 
+    img = cv2.imread('photo.png') 
     if img is None: return
     h, w, c = img.shape
     
