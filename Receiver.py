@@ -30,11 +30,10 @@ def receiver():
             alpha = (k[0] % 1) * 100 + np.floor(k[0])
             beta = (round(k[1] * 10**10) % 35) + 2
             x0, y0 = (k[2] % 1), (k[3] % 1)
-            x0 += 0.000001
+            #x0 += 0.000000001 
             X, Y = generate_chaos(alpha, beta, x0, y0, h*w*c)
             diff_keys = get_diffusion_matrices(X, Y)
             
-            # פענוח (XOR על 4 המטריצות בסדר זהה)
             undiffused = apply_diffusion(msg['image'], diff_keys)
             
             idx = np.argsort(X)
